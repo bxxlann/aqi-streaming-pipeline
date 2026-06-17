@@ -10,6 +10,7 @@ AQI is calculated using the US EPA linear interpolation formula from PM2.5 conce
 import json
 import logging
 import os
+import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -94,7 +95,37 @@ def enrich(reading: dict) -> dict:
 
 # ── ClickHouse ─────────────────────────────────────────────────────────────────
 def make_ch_client() -> Client:
-    return Client(host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT, database=CLICKHOUSE_DB)
+    # Connect without specifying DB first, ensure schema exists, then reconnect
+    for attempt in range(30):
+        try:
+            client = Client(host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT)
+            client.execute(f"CREATE DATABASE IF NOT EXISTS {CLICKHOUSE_DB}")
+            client.execute(f"""
+                CREATE TABLE IF NOT EXISTS {CLICKHOUSE_DB}.readings (
+                    location_id   UInt32,
+                    location_name String,
+                    city          String,
+                    country       String,
+                    parameter     String,
+                    value         Float32,
+                    unit          String,
+                    aqi           UInt16,
+                    aqi_category  String,
+                    latitude      Float64,
+                    longitude     Float64,
+                    measured_at   DateTime,
+                    ingested_at   DateTime DEFAULT now()
+                ) ENGINE = MergeTree()
+                PARTITION BY toYYYYMM(measured_at)
+                ORDER BY (location_id, measured_at)
+                TTL measured_at + INTERVAL 1 YEAR
+            """)
+            log.info("ClickHouse ready")
+            return Client(host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT, database=CLICKHOUSE_DB)
+        except Exception as exc:
+            log.warning("ClickHouse not ready (attempt %d/30): %s", attempt + 1, exc)
+            time.sleep(3)
+    raise RuntimeError("Could not connect to ClickHouse after 30 attempts")
 
 
 def insert_to_clickhouse(client: Client, rows: list[dict]):
@@ -117,7 +148,13 @@ def insert_to_clickhouse(client: Client, rows: list[dict]):
         }
         for r in rows
     ]
-    client.execute("INSERT INTO aqi.readings VALUES", data)
+    client.execute(
+        """INSERT INTO aqi.readings
+           (location_id, location_name, city, country, parameter,
+            value, unit, aqi, aqi_category, latitude, longitude, measured_at)
+           VALUES""",
+        data,
+    )
     log.info("Inserted %d rows into ClickHouse", len(rows))
 
 
