@@ -1,0 +1,4 @@
+confluent-kafka==2.3.0
+clickhouse-driver==0.2.7
+pyarrow==15.0.0
+requests==2.31.0

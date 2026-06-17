@@ -1,0 +1,5 @@
+.env
+data/cold-path/
+__pycache__/
+*.pyc
+.DS_Store

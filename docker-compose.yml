@@ -1,0 +1,108 @@
+version: '3.8'
+
+services:
+  redpanda:
+    image: redpandadata/redpanda:v23.3.11
+    container_name: redpanda
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --smp 1
+      - --memory 512M
+      - --overprovisioned
+      - --node-id 0
+    ports:
+      - "19092:19092"
+      - "9644:9644"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redpanda-init:
+    image: redpandadata/redpanda:v23.3.11
+    container_name: redpanda-init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: >
+      bash -c "
+        rpk --brokers redpanda:9092 topic create aqi-raw --partitions 3 --replicas 1 2>/dev/null || true
+      "
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.1
+    container_name: clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - clickhouse-data:/var/lib/clickhouse
+    environment:
+      CLICKHOUSE_DB: aqi
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  producer:
+    build: ./producer
+    container_name: aqi-producer
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKER: redpanda:9092
+      OPENAQ_API_KEY: ${OPENAQ_API_KEY:-}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-60}
+    restart: unless-stopped
+
+  processor:
+    build: ./processor
+    container_name: aqi-processor
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKER: redpanda:9092
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "9000"
+      CLICKHOUSE_DB: aqi
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      AQI_ALERT_THRESHOLD: ${AQI_ALERT_THRESHOLD:-150}
+      COLD_PATH_DIR: /data/cold-path
+    volumes:
+      - ./data/cold-path:/data/cold-path
+    restart: unless-stopped
+
+volumes:
+  clickhouse-data:
+  grafana-data:

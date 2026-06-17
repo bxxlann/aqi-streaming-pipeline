@@ -1,0 +1,108 @@
+{
+  "title": "Almaty AQI Monitoring",
+  "uid": "almaty-aqi-v1",
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Current AQI by Station",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 51 },
+              { "color": "orange", "value": 101 },
+              { "color": "red",    "value": 151 },
+              { "color": "purple", "value": 201 },
+              { "color": "dark-red", "value": 301 }
+            ]
+          },
+          "unit": "none",
+          "displayName": "${__field.labels.location_name}"
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource" },
+          "rawSql": "SELECT location_name, argMax(aqi, measured_at) AS aqi FROM aqi.readings WHERE parameter = 'pm25' AND measured_at >= now() - INTERVAL 2 HOUR GROUP BY location_name",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "PM2.5 AQI — Last 6 Hours",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 16, "h": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 51 },
+              { "color": "orange", "value": 101 },
+              { "color": "red",    "value": 151 }
+            ]
+          }
+        }
+      },
+      "options": { "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource" },
+          "rawSql": "SELECT measured_at AS time, location_name, aqi FROM aqi.readings WHERE parameter = 'pm25' AND measured_at >= now() - INTERVAL 6 HOUR ORDER BY measured_at",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "AQI Category Distribution",
+      "type": "piechart",
+      "gridPos": { "x": 16, "y": 4, "w": 8, "h": 10 },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource" },
+          "rawSql": "SELECT aqi_category, count() AS cnt FROM aqi.readings WHERE parameter = 'pm25' AND measured_at >= now() - INTERVAL 6 HOUR GROUP BY aqi_category",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Hourly Average AQI",
+      "type": "bargauge",
+      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 51 },
+              { "color": "orange", "value": 101 },
+              { "color": "red",    "value": 151 }
+            ]
+          }
+        }
+      },
+      "options": { "orientation": "horizontal", "reduceOptions": { "calcs": ["mean"] } },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-clickhouse-datasource" },
+          "rawSql": "SELECT toStartOfHour(measured_at) AS hour, location_name, round(avg(aqi)) AS avg_aqi FROM aqi.readings WHERE parameter = 'pm25' AND measured_at >= now() - INTERVAL 24 HOUR GROUP BY hour, location_name ORDER BY hour",
+          "format": "time_series"
+        }
+      ]
+    }
+  ]
+}
