@@ -79,7 +79,7 @@
         {
           "datasource": { "type": "grafana-clickhouse-datasource" },
           "queryType": "sql",
-          "rawSql": "SELECT aqi_category, count() AS cnt FROM aqi.readings WHERE parameter = 'pm25' AND measured_at >= now() - INTERVAL 6 HOUR GROUP BY aqi_category",
+          "rawSql": "SELECT countIf(aqi_category = 'Good') AS Good, countIf(aqi_category = 'Moderate') AS Moderate, countIf(aqi_category = 'Unhealthy for Sensitive Groups') AS \"Unhealthy (Sensitive)\", countIf(aqi_category = 'Unhealthy') AS Unhealthy, countIf(aqi_category = 'Very Unhealthy') AS \"Very Unhealthy\", countIf(aqi_category = 'Hazardous') AS Hazardous FROM aqi.readings WHERE parameter = 'pm25' AND measured_at >= now() - INTERVAL 6 HOUR",
           "format": 0
         }
       ]

@@ -114,41 +114,69 @@ def fetch_latest_measurements(location_ids: list[int]) -> list[dict]:
 def simulate_almaty_readings() -> list[dict]:
     """
     Fallback: generate realistic synthetic readings when the API is unavailable
-    or no API key is configured. Values mimic a typical Almaty winter day.
+    or no API key is configured.
+
+    Each station has its own pollution profile so the dashboard shows all AQI
+    categories (Good → Hazardous) across stations and time.
     """
     import math
     import random
 
     now = datetime.now(timezone.utc)
-    # Winter smog is worse at night — simple sinusoidal pattern
+    minute = now.minute  # 0-59 cycles within each hour for variety
     hour = now.hour
-    base_pm25 = 45 + 30 * math.sin(math.pi * (hour - 6) / 12)
 
+    # Each station has a different base pollution level so all AQI bands appear:
+    # Center: industrial area — cycles through all categories over the hour
+    # Alatau: residential, cleaner — stays Good/Moderate
+    # Bostandyk: near highway — spikes to Unhealthy/Very Unhealthy
+    # Airport: outskirts — moderate with occasional spikes
     stations = [
-        (1001, "Almaty-Center",     "Almaty", 43.2565, 76.9285),
-        (1002, "Almaty-Alatau",     "Almaty", 43.2117, 76.8489),
-        (1003, "Almaty-Bostandyk",  "Almaty", 43.2456, 76.9003),
+        (1001, "Almaty-Center",     43.2565, 76.9285, "industrial"),
+        (1002, "Almaty-Alatau",     43.2117, 76.8489, "residential"),
+        (1003, "Almaty-Bostandyk",  43.2456, 76.9003, "highway"),
+        (1004, "Almaty-Airport",    43.3521, 77.0405, "outskirts"),
     ]
 
+    # PM2.5 ranges by profile (µg/m³):
+    #   Good                0-12
+    #   Moderate           12-35
+    #   Unhealthy (sens)   35-55
+    #   Unhealthy          55-150
+    #   Very Unhealthy    150-250
+    #   Hazardous         250+
+    profile_ranges = {
+        "industrial":  (20,  260),   # sweeps full range over the hour
+        "residential": (2,   40),    # Good → Moderate
+        "highway":     (50,  220),   # Unhealthy → Very Unhealthy
+        "outskirts":   (10,  80),    # Moderate → Unhealthy
+    }
+
     readings = []
-    for loc_id, loc_name, city, lat, lon in stations:
-        pm25 = max(0.0, base_pm25 + random.gauss(0, 8))
-        pm10 = pm25 * 1.6 + random.gauss(0, 5)
+    for loc_id, loc_name, lat, lon, profile in stations:
+        lo, hi = profile_ranges[profile]
+        # Sinusoidal sweep so value changes smoothly minute-by-minute
+        phase = 2 * math.pi * minute / 60
+        mid = (lo + hi) / 2
+        amp = (hi - lo) / 2
+        pm25 = mid + amp * math.sin(phase) + random.gauss(0, amp * 0.05)
+        pm25 = max(0.0, round(pm25, 2))
+        pm10 = round(pm25 * 1.6 + random.gauss(0, 4), 2)
 
         for param, value, unit in [("pm25", pm25, "µg/m³"), ("pm10", pm10, "µg/m³")]:
             readings.append({
-                "location_id": loc_id,
+                "location_id":   loc_id,
                 "location_name": loc_name,
-                "city": city,
-                "country": "KZ",
-                "parameter": param,
-                "value": round(value, 2),
-                "unit": unit,
-                "latitude": lat,
-                "longitude": lon,
-                "measured_at": now.isoformat(),
-                "producer_ts": now.isoformat(),
-                "simulated": True,
+                "city":          "Almaty",
+                "country":       "KZ",
+                "parameter":     param,
+                "value":         value,
+                "unit":          unit,
+                "latitude":      lat,
+                "longitude":     lon,
+                "measured_at":   now.isoformat(),
+                "producer_ts":   now.isoformat(),
+                "simulated":     True,
             })
     return readings
 
