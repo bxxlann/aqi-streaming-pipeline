@@ -15,24 +15,29 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green",  "value": null },
-              { "color": "yellow", "value": 51 },
-              { "color": "orange", "value": 101 },
-              { "color": "red",    "value": 151 },
-              { "color": "purple", "value": 201 },
+              { "color": "green",    "value": null },
+              { "color": "yellow",   "value": 51 },
+              { "color": "orange",   "value": 101 },
+              { "color": "red",      "value": 151 },
+              { "color": "purple",   "value": 201 },
               { "color": "dark-red", "value": 301 }
             ]
           },
           "unit": "none",
-          "displayName": "${__field.labels.location_name}"
+          "color": { "mode": "thresholds" }
         }
       },
-      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
       "targets": [
         {
           "datasource": { "type": "grafana-clickhouse-datasource" },
+          "queryType": "sql",
           "rawSql": "SELECT location_name, argMax(aqi, measured_at) AS aqi FROM aqi.readings WHERE parameter = 'pm25' AND measured_at >= now() - INTERVAL 2 HOUR GROUP BY location_name",
-          "format": "table"
+          "format": 0
         }
       ]
     },
@@ -59,8 +64,9 @@
       "targets": [
         {
           "datasource": { "type": "grafana-clickhouse-datasource" },
+          "queryType": "sql",
           "rawSql": "SELECT measured_at AS time, location_name, aqi FROM aqi.readings WHERE parameter = 'pm25' AND measured_at >= now() - INTERVAL 6 HOUR ORDER BY measured_at",
-          "format": "time_series"
+          "format": 1
         }
       ]
     },
@@ -72,18 +78,20 @@
       "targets": [
         {
           "datasource": { "type": "grafana-clickhouse-datasource" },
+          "queryType": "sql",
           "rawSql": "SELECT aqi_category, count() AS cnt FROM aqi.readings WHERE parameter = 'pm25' AND measured_at >= now() - INTERVAL 6 HOUR GROUP BY aqi_category",
-          "format": "table"
+          "format": 0
         }
       ]
     },
     {
       "id": 4,
       "title": "Hourly Average AQI",
-      "type": "bargauge",
-      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 6 },
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 8 },
       "fieldConfig": {
         "defaults": {
+          "custom": { "lineWidth": 2, "fillOpacity": 15 },
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -95,12 +103,13 @@
           }
         }
       },
-      "options": { "orientation": "horizontal", "reduceOptions": { "calcs": ["mean"] } },
+      "options": { "tooltip": { "mode": "multi" } },
       "targets": [
         {
           "datasource": { "type": "grafana-clickhouse-datasource" },
-          "rawSql": "SELECT toStartOfHour(measured_at) AS hour, location_name, round(avg(aqi)) AS avg_aqi FROM aqi.readings WHERE parameter = 'pm25' AND measured_at >= now() - INTERVAL 24 HOUR GROUP BY hour, location_name ORDER BY hour",
-          "format": "time_series"
+          "queryType": "sql",
+          "rawSql": "SELECT toStartOfHour(measured_at) AS time, location_name, round(avg(aqi)) AS avg_aqi FROM aqi.readings WHERE parameter = 'pm25' AND measured_at >= now() - INTERVAL 24 HOUR GROUP BY time, location_name ORDER BY time",
+          "format": 1
         }
       ]
     }
