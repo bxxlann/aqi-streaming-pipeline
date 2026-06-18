@@ -1,11 +1,3 @@
-"""
-AQI Producer — fetches air quality data from OpenAQ API and publishes to Redpanda.
-
-Flow: OpenAQ REST API → JSON message → Kafka topic "aqi-raw"
-
-Each message is one sensor reading: location, parameter (pm25/pm10/o3...), value, timestamp.
-"""
-
 import json
 import logging
 import os
@@ -26,8 +18,6 @@ OPENAQ_API_KEY = os.environ.get("OPENAQ_API_KEY", "")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "60"))
 TOPIC = "aqi-raw"
 
-# Almaty, Kazakhstan — location IDs from OpenAQ
-# We fetch the list dynamically but keep a fallback for offline resilience
 ALMATY_SEARCH_PARAMS = {
     "country_id": "KZ",
     "city": "Almaty",
@@ -54,7 +44,6 @@ def delivery_callback(err, msg):
 
 
 def fetch_almaty_location_ids() -> list[int]:
-    """Discover Almaty station IDs from OpenAQ."""
     url = "https://api.openaq.org/v3/locations"
     try:
         resp = requests.get(url, params=ALMATY_SEARCH_PARAMS, headers=HEADERS, timeout=15)
@@ -69,7 +58,6 @@ def fetch_almaty_location_ids() -> list[int]:
 
 
 def fetch_latest_measurements(location_ids: list[int]) -> list[dict]:
-    """Fetch the most recent measurement for each location."""
     if not location_ids:
         return []
 
@@ -112,55 +100,33 @@ def fetch_latest_measurements(location_ids: list[int]) -> list[dict]:
 
 
 def simulate_almaty_readings() -> list[dict]:
-    """
-    Fallback: generate realistic synthetic readings when the API is unavailable
-    or no API key is configured.
-
-    Each station has its own pollution profile so the dashboard shows all AQI
-    categories (Good → Hazardous) across stations and time.
-    """
     import math
     import random
 
     now = datetime.now(timezone.utc)
-    minute = now.minute  # 0-59 cycles within each hour for variety
-    hour = now.hour
+    minute = now.minute
 
-    # Each station has a different base pollution level so all AQI bands appear:
-    # Center: industrial area — cycles through all categories over the hour
-    # Alatau: residential, cleaner — stays Good/Moderate
-    # Bostandyk: near highway — spikes to Unhealthy/Very Unhealthy
-    # Airport: outskirts — moderate with occasional spikes
     stations = [
-        (1001, "Almaty-Center",     43.2565, 76.9285, "industrial"),
-        (1002, "Almaty-Alatau",     43.2117, 76.8489, "residential"),
-        (1003, "Almaty-Bostandyk",  43.2456, 76.9003, "highway"),
-        (1004, "Almaty-Airport",    43.3521, 77.0405, "outskirts"),
+        (1001, "Almaty-Center",    43.2565, 76.9285, "industrial"),
+        (1002, "Almaty-Alatau",    43.2117, 76.8489, "residential"),
+        (1003, "Almaty-Bostandyk", 43.2456, 76.9003, "highway"),
+        (1004, "Almaty-Airport",   43.3521, 77.0405, "outskirts"),
     ]
 
-    # PM2.5 ranges by profile (µg/m³):
-    #   Good                0-12
-    #   Moderate           12-35
-    #   Unhealthy (sens)   35-55
-    #   Unhealthy          55-150
-    #   Very Unhealthy    150-250
-    #   Hazardous         250+
     profile_ranges = {
-        "industrial":  (20,  260),   # sweeps full range over the hour
-        "residential": (2,   40),    # Good → Moderate
-        "highway":     (50,  220),   # Unhealthy → Very Unhealthy
-        "outskirts":   (10,  80),    # Moderate → Unhealthy
+        "industrial":  (20,  260),
+        "residential": (2,   40),
+        "highway":     (50,  220),
+        "outskirts":   (10,  80),
     }
 
     readings = []
     for loc_id, loc_name, lat, lon, profile in stations:
         lo, hi = profile_ranges[profile]
-        # Sinusoidal sweep so value changes smoothly minute-by-minute
         phase = 2 * math.pi * minute / 60
         mid = (lo + hi) / 2
         amp = (hi - lo) / 2
-        pm25 = mid + amp * math.sin(phase) + random.gauss(0, amp * 0.05)
-        pm25 = max(0.0, round(pm25, 2))
+        pm25 = max(0.0, round(mid + amp * math.sin(phase) + random.gauss(0, amp * 0.05), 2))
         pm10 = round(pm25 * 1.6 + random.gauss(0, 4), 2)
 
         for param, value, unit in [("pm25", pm25, "µg/m³"), ("pm10", pm10, "µg/m³")]:
@@ -189,7 +155,6 @@ def run():
     log.info("Producer started. Broker=%s  Topic=%s  Interval=%ds", KAFKA_BROKER, TOPIC, POLL_INTERVAL)
 
     while True:
-        # Refresh location list every 10 polls (~10 minutes)
         if location_refresh_counter == 0:
             location_ids = fetch_almaty_location_ids()
 

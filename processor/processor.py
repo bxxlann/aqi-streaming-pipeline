@@ -1,17 +1,7 @@
-"""
-AQI Stream Processor
-
-Hot path:  Kafka → AQI calculation → ClickHouse → Slack alert (if threshold exceeded)
-Cold path: Kafka → buffer → Parquet file (hourly flush, partitioned by date)
-
-AQI is calculated using the US EPA linear interpolation formula from PM2.5 concentration.
-"""
-
 import json
 import logging
 import os
 import time
-from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,7 +17,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Configuration ──────────────────────────────────────────────────────────────
 KAFKA_BROKER        = os.environ["KAFKA_BROKER"]
 CLICKHOUSE_HOST     = os.environ.get("CLICKHOUSE_HOST", "clickhouse")
 CLICKHOUSE_PORT     = int(os.environ.get("CLICKHOUSE_PORT", "9000"))
@@ -37,9 +26,8 @@ ALERT_THRESHOLD     = int(os.environ.get("AQI_ALERT_THRESHOLD", "150"))
 COLD_PATH_DIR       = Path(os.environ.get("COLD_PATH_DIR", "/data/cold-path"))
 TOPIC               = "aqi-raw"
 CONSUMER_GROUP      = "aqi-processor-v1"
-COLD_FLUSH_INTERVAL = 300  # write Parquet every 5 minutes
+COLD_FLUSH_INTERVAL = 300
 
-# EPA PM2.5 → AQI breakpoints: (C_low, C_high, AQI_low, AQI_high)
 PM25_BREAKPOINTS = [
     (0.0,   12.0,   0,   50),
     (12.1,  35.4,  51,  100),
@@ -61,12 +49,11 @@ AQI_CATEGORIES = [
 
 
 def pm25_to_aqi(concentration: float) -> int:
-    """Convert PM2.5 µg/m³ to AQI using EPA linear interpolation."""
     c = round(concentration, 1)
     for c_lo, c_hi, aqi_lo, aqi_hi in PM25_BREAKPOINTS:
         if c_lo <= c <= c_hi:
             return round((aqi_hi - aqi_lo) / (c_hi - c_lo) * (c - c_lo) + aqi_lo)
-    return 500  # beyond hazardous
+    return 500
 
 
 def aqi_category(aqi: int) -> str:
@@ -77,15 +64,9 @@ def aqi_category(aqi: int) -> str:
 
 
 def enrich(reading: dict) -> dict:
-    """Add AQI fields to a reading. Only PM2.5 → AQI conversion is standardized."""
     param = reading.get("parameter", "").lower()
     value = reading.get("value", 0.0)
-
-    if param == "pm25":
-        aqi = pm25_to_aqi(value)
-    else:
-        aqi = 0  # AQI not calculated for other parameters in this pipeline
-
+    aqi = pm25_to_aqi(value) if param == "pm25" else 0
     return {
         **reading,
         "aqi": aqi,
@@ -93,9 +74,7 @@ def enrich(reading: dict) -> dict:
     }
 
 
-# ── ClickHouse ─────────────────────────────────────────────────────────────────
 def make_ch_client() -> Client:
-    # Connect without specifying DB first, ensure schema exists, then reconnect
     for attempt in range(30):
         try:
             client = Client(host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT)
@@ -158,15 +137,11 @@ def insert_to_clickhouse(client: Client, rows: list[dict]):
     log.info("Inserted %d rows into ClickHouse", len(rows))
 
 
-# ── Slack alerts ───────────────────────────────────────────────────────────────
-# Track last alert time per location to avoid spam (1 alert per location per hour)
 _last_alert: dict[int, datetime] = {}
 
 
 def maybe_send_slack_alert(reading: dict):
-    if not SLACK_WEBHOOK_URL:
-        return
-    if reading["aqi"] < ALERT_THRESHOLD:
+    if not SLACK_WEBHOOK_URL or reading["aqi"] < ALERT_THRESHOLD:
         return
 
     loc_id = reading["location_id"]
@@ -192,7 +167,6 @@ def maybe_send_slack_alert(reading: dict):
         log.warning("Slack alert failed: %s", exc)
 
 
-# ── Cold path (Parquet) ────────────────────────────────────────────────────────
 PARQUET_SCHEMA = pa.schema([
     pa.field("location_id",   pa.int32()),
     pa.field("location_name", pa.string()),
@@ -210,33 +184,26 @@ PARQUET_SCHEMA = pa.schema([
 
 
 def flush_cold_path(buffer: list[dict]):
-    """Write buffered readings to a date-partitioned Parquet file."""
     if not buffer:
         return
 
     now = datetime.now(timezone.utc)
-    date_str = now.strftime("%Y-%m-%d")
-    hour_str = now.strftime("%H")
-
-    out_dir = COLD_PATH_DIR / f"date={date_str}"
+    out_dir = COLD_PATH_DIR / f"date={now.strftime('%Y-%m-%d')}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f"hour={hour_str}.parquet"
+    out_file = out_dir / f"hour={now.strftime('%H')}.parquet"
 
     table = pa.table(
         {field.name: [r.get(field.name, None) for r in buffer] for field in PARQUET_SCHEMA},
         schema=PARQUET_SCHEMA,
     )
 
-    # Append to existing file if it already exists for this hour
     if out_file.exists():
-        existing = pq.read_table(out_file)
-        table = pa.concat_tables([existing, table])
+        table = pa.concat_tables([pq.read_table(out_file), table])
 
     pq.write_table(table, out_file, compression="snappy")
     log.info("Cold path: wrote %d rows → %s", len(buffer), out_file)
 
 
-# ── Main consumer loop ─────────────────────────────────────────────────────────
 def run():
     consumer = Consumer({
         "bootstrap.servers": KAFKA_BROKER,
@@ -251,10 +218,7 @@ def run():
     cold_buffer: list[dict] = []
     last_cold_flush = datetime.now(timezone.utc)
 
-    log.info(
-        "Processor started. Broker=%s  Topic=%s  AQI threshold=%d",
-        KAFKA_BROKER, TOPIC, ALERT_THRESHOLD,
-    )
+    log.info("Processor started. Broker=%s  Topic=%s  AQI threshold=%d", KAFKA_BROKER, TOPIC, ALERT_THRESHOLD)
 
     try:
         while True:
@@ -267,21 +231,14 @@ def run():
                     log.error("Kafka error: %s", msg.error())
             else:
                 try:
-                    raw = json.loads(msg.value().decode())
-                    reading = enrich(raw)
-
-                    # Hot path: ClickHouse + optional Slack alert
+                    reading = enrich(json.loads(msg.value().decode()))
                     insert_to_clickhouse(ch_client, [reading])
                     if reading["parameter"] == "pm25":
                         maybe_send_slack_alert(reading)
-
-                    # Buffer for cold path
                     cold_buffer.append(reading)
-
                 except Exception as exc:
                     log.error("Failed to process message: %s — %s", msg.value(), exc)
 
-            # Flush cold path on interval
             now = datetime.now(timezone.utc)
             if (now - last_cold_flush).seconds >= COLD_FLUSH_INTERVAL:
                 flush_cold_path(cold_buffer)
